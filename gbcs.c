@@ -340,7 +340,7 @@ static struct {
     { "Message Code", "gbcs.message_code", FT_UINT16, BASE_HEX, gbcs_message_code_names, 0, 0, HFILL },
     { "Supplementary Remote Party ID", "gbcs.suppl_remote_id", FT_UINT64, BASE_HEX, 0, 0, 0, HFILL },
     { "Supplementary Remote Party Counter", "gbcs.suppl_remote_counter", FT_UINT64, BASE_DEC, 0, 0, 0, HFILL },
-    { "Supplementary Originator ID", "gbcs.suppl_originator_id", FT_UINT64, BASE_HEX, 0, 0, 0, HFILL },
+    { "Supplementary Originator Counter", "gbcs.suppl_originator_counter", FT_UINT64, BASE_DEC, 0, 0, 0, HFILL },
     { "Supplementary Remote Party Key Agreement Certificate", "gbcs.suppl_remote_certificate", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     { "Signature", "gbcs.signature", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     /* GBZ payload */
@@ -674,13 +674,14 @@ gbcs_dissect_general_signing(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree
     if (other_info_length >= 2) {
         proto_tree_add_item(subsubtree, &gbcs_hfi.message_code, tvb, offset, 2, ENC_BIG_ENDIAN);
         message_code = tvb_get_ntohs(tvb, offset);
-        if (other_info_length >= 18) {
+        if (other_info_length >= 10) {
             proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_remote_id, tvb, offset + 2, 8, ENC_BIG_ENDIAN);
-            proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_remote_counter, tvb, offset + 10, 8, ENC_BIG_ENDIAN);
-            if (other_info_length >= 26) {
-                proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_originator_counter, tvb, offset + 18, 8, ENC_BIG_ENDIAN);
-                if (other_info_length > 26) {
-                    proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_remote_certificate, tvb, offset + 26, other_info_length - 26, ENC_BIG_ENDIAN);
+            if (other_info_length >= 18) {
+                proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_remote_counter, tvb, offset + 10, 8, ENC_BIG_ENDIAN);
+                if (cra_flag == GBCS_COMMAND && other_info_length > 18) {
+                    proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_remote_certificate, tvb, offset + 18, other_info_length - 18, ENC_BIG_ENDIAN);
+                } else if (cra_flag == GBCS_RESPONSE && other_info_length >= 26) {
+                    proto_tree_add_item(subsubtree, &gbcs_hfi.suppl_originator_counter, tvb, offset + 18, 8, ENC_BIG_ENDIAN);
                 }
             }
         }
