@@ -591,7 +591,20 @@ gbcs_dissect_asn1_encoding(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
     identifier = tvb_get_guint8(tvb, offset);
     offset += 1;
 
-    proto_item_set_text(item, "%s", asn1_universal_tag_names[identifier & 31]);
+    switch (identifier & 0xc0) { /* class */
+    case 0x00: /* universal */
+        proto_item_set_text(item, "%s", asn1_universal_tag_names[identifier & 31]);
+        break;
+    case 0x40: /* application */
+        proto_item_set_text(item, "[APPLICATION %u]", identifier & 31);
+        break;
+    case 0x80: /* context-specific */
+        proto_item_set_text(item, "[%u]", identifier & 31);
+        break;
+    case 0xc0: /* private */
+        proto_item_set_text(item, "[PRIVATE %u]", identifier & 31);
+        break;
+    }
 
     /* Length octets */
     length = gbcs_dissect_encoded_length(tvb, subtree, &gbcs_hfi.asn1_length, &offset);
