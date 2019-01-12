@@ -1,7 +1,7 @@
 /*
  * gbcs.c - Great Britain Companion Specification dissector plugin for Wireshark
  *
- * Copyright (C) 2018 Andre B. Oliveira
+ * Copyright (C) 2018,2019 Andre B. Oliveira
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -268,12 +268,14 @@ static const value_string gbcs_message_code_names[] = {
     { 0, 0 }
 };
 
-/* The DLMS/COSEM APDU tags used by the GBCS MAC Header and Grouping Header */
+/* The DLMS/COSEM APDU tags used by the GBCS headers */
 #define GBCS_GENERAL_CIPHERING 221
 #define GBCS_GENERAL_SIGNING 223
+#define GBCS_GENERAL_BLOCK_TRANSFER 224
 static const value_string gbcs_apdu_names[] = {
     { GBCS_GENERAL_CIPHERING, "General-Ciphering" },
     { GBCS_GENERAL_SIGNING, "General-Signing" },
+    { GBCS_GENERAL_BLOCK_TRANSFER, "General-Block-Transfer" },
     { 0, 0 }
 };
 
@@ -308,6 +310,13 @@ static struct {
     header_field_info suppl_originator_counter;
     header_field_info suppl_remote_certificate;
     header_field_info signature;
+    /* GBT header */
+    header_field_info last_block;
+    header_field_info streaming;
+    header_field_info window;
+    header_field_info block_number;
+    header_field_info block_number_ack;
+    header_field_info block_data;
     /* GBZ payload */
     header_field_info gbz_profile_id;
     header_field_info gbz_components;
@@ -343,6 +352,13 @@ static struct {
     { "Supplementary Originator Counter", "gbcs.suppl_originator_counter", FT_UINT64, BASE_DEC, 0, 0, 0, HFILL },
     { "Supplementary Remote Party Key Agreement Certificate", "gbcs.suppl_remote_certificate", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     { "Signature", "gbcs.signature", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
+    /* GBT header */
+    { "Last Block", "gbcs.last_block", FT_UINT8, BASE_DEC, 0, 0x80, 0, HFILL },
+    { "Streaming", "gbcs.streaming", FT_UINT8, BASE_DEC, 0, 0x40, 0, HFILL },
+    { "Window", "gbcs.window", FT_UINT8, BASE_DEC, 0, 0x3f, 0, HFILL },
+    { "Block Number", "gbcs.block_number", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
+    { "Block Number Ack", "gbcs.block_number_ack", FT_UINT16, BASE_DEC, 0, 0, 0, HFILL },
+    { "Block Data", "gbcs.block_data", FT_NONE, BASE_NONE, 0, 0, 0, HFILL },
     /* GBZ payload */
     { "Profile ID", "gbcs.gbz_profile_id", FT_UINT16, BASE_HEX, 0, 0, 0, HFILL },
     { "Number of GBZ Components", "gbcs.gbz_components", FT_UINT8, BASE_DEC, 0, 0, 0, HFILL },
@@ -369,6 +385,9 @@ static struct {
     gint gbcs;
     gint mac_header;
     gint grouping_header;
+    gint routing_header;
+    gint gbt_header;
+    gint block_control;
     gint transaction;
     gint originator;
     gint recipient;
@@ -786,6 +805,97 @@ gbcs_dissect_general_ciphering(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tr
     proto_tree_add_item(tree, &gbcs_hfi.mac, tvb, offset, 12, ENC_NA);
 }
 
+static void
+gbcs_dissect_gbt(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, int offset)
+{
+    proto_tree *subtree, *subsubtree;
+    proto_item *item;
+    guint16 block_number;
+    gint block_data_length;
+
+    /* Start of Message Routing Header */
+    subtree = proto_tree_add_subtree(tree, tvb, offset, 0, gbcs_ett.routing_header, &item, "Routing Header");
+
+    /* General-Ciphering DLMS/COSEM APDU tag */
+    proto_tree_add_item(subtree, &gbcs_hfi.apdu, tvb, offset, 1, ENC_NA);
+    offset += 1;
+
+    /* Transaction ID */
+    subsubtree = proto_tree_add_subtree(subtree, tvb, offset, 10, gbcs_ett.transaction, 0, "Transaction ID");
+    gbcs_dissect_encoded_length(tvb, subsubtree, &gbcs_hfi.length, &offset);
+    proto_tree_add_item(subsubtree, &gbcs_hfi.cra, tvb, offset, 1, ENC_NA);
+    offset += 1;
+    proto_tree_add_item(subsubtree, &gbcs_hfi.originator_counter, tvb, offset, 8, ENC_BIG_ENDIAN);
+    offset += 8;
+
+    /* Originator System Title */
+    subsubtree = proto_tree_add_subtree(subtree, tvb, offset, 9, gbcs_ett.originator, 0, "Originator System Title");
+    gbcs_dissect_encoded_length(tvb, subsubtree, &gbcs_hfi.length, &offset);
+    proto_tree_add_item(subsubtree, &gbcs_hfi.originator_id, tvb, offset, 8, ENC_BIG_ENDIAN);
+    offset += 8;
+
+    /* Recipient System Title */
+    subsubtree = proto_tree_add_subtree(subtree, tvb, offset, 9, gbcs_ett.recipient, 0, "Recipient System Title");
+    gbcs_dissect_encoded_length(tvb, subsubtree, &gbcs_hfi.length, &offset);
+    proto_tree_add_item(subsubtree, &gbcs_hfi.recipient_id, tvb, offset, 8, ENC_BIG_ENDIAN);
+    offset += 8;
+
+    /* Date Time */
+    proto_tree_add_subtree(subtree, tvb, offset, 1, gbcs_ett.date_time, 0, "Date Time");
+    offset += 1;
+
+    /* Other Information */
+    subsubtree = proto_tree_add_subtree(subtree, tvb, offset, 3, gbcs_ett.other_info, 0, "Other Information");
+    gbcs_dissect_encoded_length(tvb, subsubtree, &gbcs_hfi.length, &offset);
+    proto_tree_add_item(subsubtree, &gbcs_hfi.message_code, tvb, offset, 2, ENC_BIG_ENDIAN);
+    offset += 2;
+
+    /* Key Information */
+    proto_tree_add_subtree(subtree, tvb, offset, 1, gbcs_ett.key_info, 0, "Key Information");
+    offset += 1;
+
+    /* Ciphered-service length */
+    gbcs_dissect_encoded_length(tvb, subtree, &gbcs_hfi.length, &offset);
+
+    /* Security header */
+    proto_tree_add_item(subtree, &gbcs_hfi.security_header, tvb, offset, 5, ENC_NA);
+    offset += 5;
+
+    /* End of Message Routing Header */
+    proto_item_set_end(item, tvb, offset);
+
+    /* Start of GBT Header */
+    subtree = proto_tree_add_subtree(tree, tvb, offset, 0, gbcs_ett.gbt_header, &item, "GBT Header");
+
+    /* General-Ciphering DLMS/COSEM APDU tag */
+    proto_tree_add_item(subtree, &gbcs_hfi.apdu, tvb, offset, 1, ENC_NA);
+    offset += 1;
+
+    /* Block Control */
+    subsubtree = proto_tree_add_subtree(subtree, tvb, offset, 1, gbcs_ett.block_control, 0, "Block Control");
+    proto_tree_add_item(subsubtree, &gbcs_hfi.last_block, tvb, offset, 1, ENC_NA);
+    proto_tree_add_item(subsubtree, &gbcs_hfi.streaming, tvb, offset, 1, ENC_NA);
+    proto_tree_add_item(subsubtree, &gbcs_hfi.window, tvb, offset, 1, ENC_NA);
+    offset += 1;
+
+    /* Block Number */
+    proto_tree_add_item(subtree, &gbcs_hfi.block_number, tvb, offset, 2, ENC_BIG_ENDIAN);
+    block_number = tvb_get_ntohs(tvb, offset);
+    col_add_fstr(pinfo->cinfo, COL_INFO, "GBT block %u", block_number);
+    offset += 2;
+
+    /* Block Number Ack */
+    proto_tree_add_item(subtree, &gbcs_hfi.block_number_ack, tvb, offset, 2, ENC_BIG_ENDIAN);
+    offset += 2;
+
+    block_data_length = gbcs_dissect_encoded_length(tvb, subtree, &gbcs_hfi.length, &offset);
+
+    /* End of GBT Header */
+    proto_item_set_end(item, tvb, offset);
+
+    proto_tree_add_item(tree, &gbcs_hfi.block_data, tvb, offset, block_data_length, ENC_NA);
+}
+
 static int
 gbcs_dissect(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
@@ -800,11 +910,17 @@ gbcs_dissect(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
     for (offset = 0; offset + 11 < tvb_captured_length(tvb); offset++) {
         tag = tvb_get_guint8(tvb, offset);
         if (tag == GBCS_GENERAL_CIPHERING) {
-            /* 0xdd 0x00 0x00 0x00 0x00 0x00 0x00 ... (TODO: Message Routing Header (GBT)) */
-            if (tvb_get_letoh48(tvb, offset + 1) == 0) {
+            guint8 transaction_id_length = tvb_get_guint8(tvb, offset + 1);
+            if (transaction_id_length == 0) {  /* MAC header */
                 item = proto_tree_add_item(tree, hfi, tvb, offset, -1, ENC_NA);
                 subtree = proto_item_add_subtree(item, gbcs_ett.gbcs);
                 gbcs_dissect_general_ciphering(tvb, pinfo, subtree, offset);
+                col_set_str(pinfo->cinfo, COL_PROTOCOL, "GBCS");
+                return tvb_captured_length(tvb);
+            } else if (transaction_id_length == 9) {  /* GBT message routing header */
+                item = proto_tree_add_item(tree, hfi, tvb, offset, -1, ENC_NA);
+                subtree = proto_item_add_subtree(item, gbcs_ett.gbcs);
+                gbcs_dissect_gbt(tvb, pinfo, subtree, offset);
                 col_set_str(pinfo->cinfo, COL_PROTOCOL, "GBCS");
                 return tvb_captured_length(tvb);
             }
